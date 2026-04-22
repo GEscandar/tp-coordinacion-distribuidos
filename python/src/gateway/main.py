@@ -13,8 +13,17 @@ MOM_HOST = os.environ["MOM_HOST"]
 INPUT_QUEUE = os.environ["INPUT_QUEUE"]
 OUTPUT_QUEUE = os.environ["OUTPUT_QUEUE"]
 
+_client_id_counter = multiprocessing.Value("i", 0)
+_client_id_lock = multiprocessing.Lock()
 
-def handle_client_request(client_socket, message_handler):
+
+def _next_client_id():
+    with _client_id_lock:
+        _client_id_counter.value += 1
+        return _client_id_counter.value
+
+
+def handle_client_request(client_socket, msg_handler):
     output_queue = middleware.MessageMiddlewareQueueRabbitMQ(MOM_HOST, OUTPUT_QUEUE)
 
     try:
@@ -22,14 +31,14 @@ def handle_client_request(client_socket, message_handler):
             message = message_protocol.external.recv_msg(client_socket)
 
             if message[0] == message_protocol.external.MsgType.FRUIT_RECORD:
-                serialized_message = message_handler.serialize_data_message(message[1])
+                serialized_message = msg_handler.serialize_data_message(message[1])
                 output_queue.send(serialized_message)
                 message_protocol.external.send_msg(
                     client_socket, message_protocol.external.MsgType.ACK
                 )
 
             if message[0] == message_protocol.external.MsgType.END_OF_RECODS:
-                serialized_message = message_handler.serialize_eof_message(message[1])
+                serialized_message = msg_handler.serialize_eof_message(message[1])
                 output_queue.send(serialized_message)
                 message_protocol.external.send_msg(
                     client_socket, message_protocol.external.MsgType.ACK
@@ -61,7 +70,7 @@ def handle_client_response(client_list):
                 message_protocol.external.send_msg(
                     client_socket,
                     message_protocol.external.MsgType.FRUIT_TOP,
-                    deserialized_message,
+                    *deserialized_message,
                 )
                 message_protocol.external.recv_msg(client_socket)
                 break
@@ -111,7 +120,8 @@ def main():
                         client_socket, _ = server_socket.accept()
 
                         logging.info("A new client has connected")
-                        message_handler_instance = message_handler.MessageHandler()
+                        client_id = _next_client_id()
+                        message_handler_instance = message_handler.MessageHandler(client_id)
                         client_list.append([message_handler_instance, client_socket])
                         processes_pool.apply_async(
                             handle_client_request,
